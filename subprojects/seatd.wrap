@@ -1,3 +1,3 @@
 [wrap-git]
-url = https://git.sr.ht/~kennylevinsen/seatd
-revision = HEAD
+url = https://github.com/pocketforge-os/seatd.git
+revision = 427b5d956afb589c4c8a1612c75644a9254d2051

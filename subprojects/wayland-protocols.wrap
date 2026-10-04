@@ -1,3 +1,3 @@
 [wrap-git]
-url = https://gitlab.freedesktop.org/wayland/wayland-protocols.git
-revision = HEAD
+url = https://github.com/pocketforge-os/wayland-protocols.git
+revision = aa62366fb800a0689f4e9de83811ff33f6a91f44
