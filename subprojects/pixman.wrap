@@ -1,3 +1,3 @@
 [wrap-git]
-url = https://gitlab.freedesktop.org/pixman/pixman.git
-revision = HEAD
+url = https://github.com/pocketforge-os/pixman.git
+revision = f227dcbe57e8fcfb5174ffd7eb55a69b6692d512

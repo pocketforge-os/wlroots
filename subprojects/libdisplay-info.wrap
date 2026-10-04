@@ -1,3 +1,3 @@
 [wrap-git]
-url = https://gitlab.freedesktop.org/emersion/libdisplay-info.git
-revision = HEAD
+url = https://github.com/pocketforge-os/libdisplay-info.git
+revision = 0791e6f6cfa928f85b952806811f3df998d2e898

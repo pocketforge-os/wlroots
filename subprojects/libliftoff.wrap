@@ -1,3 +1,3 @@
 [wrap-git]
-url = https://gitlab.freedesktop.org/emersion/libliftoff.git
-revision = HEAD
+url = https://github.com/pocketforge-os/libliftoff.git
+revision = c4226a79b7a52f59bb51789b1eda112658609125
