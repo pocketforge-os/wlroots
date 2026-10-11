@@ -14,10 +14,12 @@
 #include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <wayland-client.h>
@@ -492,6 +494,24 @@ int main(int argc, char *argv[]) {
 	server.display = wl_display_create();
 	assert(server.display != NULL);
 	server.loop = wl_display_get_event_loop(server.display);
+
+	// Hermetic runtime dir: CI containers may not provide XDG_RUNTIME_DIR,
+	// so fall back to a private mkdtemp directory and remove it at exit.
+	char runtime_dir_template[] = "/tmp/wlr-input-test-XXXXXX";
+	char *owned_runtime_dir = NULL;
+	const char *xdg_runtime_dir = getenv("XDG_RUNTIME_DIR");
+	if (xdg_runtime_dir == NULL ||
+			access(xdg_runtime_dir, W_OK | X_OK) != 0) {
+		owned_runtime_dir = mkdtemp(runtime_dir_template);
+		if (owned_runtime_dir == NULL) {
+			fprintf(stderr, "server: mkdtemp failed: %s\n",
+				strerror(errno));
+			return 2;
+		}
+		chmod(owned_runtime_dir, 0700);
+		setenv("XDG_RUNTIME_DIR", owned_runtime_dir, 1);
+	}
+
 	const char *socket = wl_display_add_socket_auto(server.display);
 	if (socket == NULL) {
 		fprintf(stderr, "server: failed to add a socket (XDG_RUNTIME_DIR?)\n");
@@ -599,5 +619,13 @@ int main(int argc, char *argv[]) {
 
 	server_remove_listeners();
 	wl_display_destroy(server.display);
+
+	if (owned_runtime_dir != NULL) {
+		char socket_path[PATH_MAX];
+		snprintf(socket_path, sizeof(socket_path), "%s/%s",
+			owned_runtime_dir, socket);
+		unlink(socket_path);
+		rmdir(owned_runtime_dir);
+	}
 	return failures != 0;
 }
