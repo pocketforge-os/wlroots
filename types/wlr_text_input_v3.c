@@ -1,10 +1,13 @@
 #include <assert.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_text_input_v3.h>
 #include <wlr/util/log.h>
 #include "text-input-unstable-v3-protocol.h"
+
+#define TEXT_INPUT_MANAGER_V3_VERSION 2
 
 static void text_input_clear_focused_surface(struct wlr_text_input_v3 *text_input) {
 	wl_list_remove(&text_input->surface_destroy.link);
@@ -63,6 +66,27 @@ void wlr_text_input_v3_send_done(struct wlr_text_input_v3 *text_input) {
 		text_input->current_serial);
 }
 
+void wlr_text_input_v3_send_action(struct wlr_text_input_v3 *text_input,
+		enum wlr_text_input_v3_action action, uint32_t serial) {
+	assert(wl_resource_get_version(text_input->resource) >= 2);
+	zwp_text_input_v3_send_action(text_input->resource,
+		(uint32_t)action, serial);
+}
+
+void wlr_text_input_v3_send_language(struct wlr_text_input_v3 *text_input,
+		const char *language) {
+	assert(wl_resource_get_version(text_input->resource) >= 2);
+	zwp_text_input_v3_send_language(text_input->resource, language);
+}
+
+void wlr_text_input_v3_send_preedit_hint(struct wlr_text_input_v3 *text_input,
+		uint32_t start, uint32_t end,
+		enum wlr_text_input_v3_preedit_hint hint) {
+	assert(wl_resource_get_version(text_input->resource) >= 2);
+	zwp_text_input_v3_send_preedit_hint(text_input->resource,
+		start, end, (uint32_t)hint);
+}
+
 static void wlr_text_input_destroy(struct wlr_text_input_v3 *text_input) {
 	wl_signal_emit_mutable(&text_input->events.destroy, text_input);
 
@@ -70,6 +94,8 @@ static void wlr_text_input_destroy(struct wlr_text_input_v3 *text_input) {
 	assert(wl_list_empty(&text_input->events.commit.listener_list));
 	assert(wl_list_empty(&text_input->events.disable.listener_list));
 	assert(wl_list_empty(&text_input->events.destroy.listener_list));
+	assert(wl_list_empty(&text_input->events.request_show_panel.listener_list));
+	assert(wl_list_empty(&text_input->events.request_hide_panel.listener_list));
 
 	text_input_clear_focused_surface(text_input);
 	wl_list_remove(&text_input->seat_destroy.link);
@@ -100,6 +126,8 @@ static void text_input_enable(struct wl_client *client,
 		return;
 	}
 	struct wlr_text_input_v3_state defaults = {0};
+	// enable must not reset the available actions (protocol v2).
+	defaults.available_actions = text_input->pending.available_actions;
 	free(text_input->pending.surrounding.text);
 	text_input->pending = defaults;
 	text_input->pending_enabled = true;
@@ -201,6 +229,52 @@ static void text_input_commit(struct wl_client *client,
 	}
 }
 
+static void text_input_set_available_actions(struct wl_client *client,
+		struct wl_resource *resource, struct wl_array *actions) {
+	struct wlr_text_input_v3 *text_input = text_input_from_resource(resource);
+	if (!text_input) {
+		return;
+	}
+	uint32_t mask = 0;
+	const uint32_t *action;
+	wl_array_for_each(action, actions) {
+		if (*action == ZWP_TEXT_INPUT_V3_ACTION_NONE ||
+				*action > ZWP_TEXT_INPUT_V3_ACTION_SUBMIT) {
+			wl_resource_post_error(resource,
+				ZWP_TEXT_INPUT_V3_ERROR_INVALID_ACTION,
+				"Invalid action %"PRIu32, *action);
+			return;
+		}
+		uint32_t bit = 1u << (*action - 1);
+		if (mask & bit) {
+			wl_resource_post_error(resource,
+				ZWP_TEXT_INPUT_V3_ERROR_INVALID_ACTION,
+				"Duplicate action %"PRIu32, *action);
+			return;
+		}
+		mask |= bit;
+	}
+	text_input->pending.available_actions = mask;
+}
+
+static void text_input_show_input_panel(struct wl_client *client,
+		struct wl_resource *resource) {
+	struct wlr_text_input_v3 *text_input = text_input_from_resource(resource);
+	if (!text_input) {
+		return;
+	}
+	wl_signal_emit_mutable(&text_input->events.request_show_panel, text_input);
+}
+
+static void text_input_hide_input_panel(struct wl_client *client,
+		struct wl_resource *resource) {
+	struct wlr_text_input_v3 *text_input = text_input_from_resource(resource);
+	if (!text_input) {
+		return;
+	}
+	wl_signal_emit_mutable(&text_input->events.request_hide_panel, text_input);
+}
+
 static const struct zwp_text_input_v3_interface text_input_impl = {
 	.destroy = text_input_destroy,
 	.enable = text_input_enable,
@@ -210,6 +284,9 @@ static const struct zwp_text_input_v3_interface text_input_impl = {
 	.set_content_type = text_input_set_content_type,
 	.set_cursor_rectangle = text_input_set_cursor_rectangle,
 	.commit = text_input_commit,
+	.set_available_actions = text_input_set_available_actions,
+	.show_input_panel = text_input_show_input_panel,
+	.hide_input_panel = text_input_hide_input_panel,
 };
 
 static const struct zwp_text_input_manager_v3_interface text_input_manager_impl;
@@ -269,6 +346,8 @@ static void text_input_manager_get_text_input(struct wl_client *client,
 	wl_signal_init(&text_input->events.commit);
 	wl_signal_init(&text_input->events.disable);
 	wl_signal_init(&text_input->events.destroy);
+	wl_signal_init(&text_input->events.request_show_panel);
+	wl_signal_init(&text_input->events.request_hide_panel);
 
 	text_input->resource = text_input_resource;
 	wl_resource_set_user_data(text_input_resource, text_input);
@@ -336,8 +415,8 @@ struct wlr_text_input_manager_v3 *wlr_text_input_manager_v3_create(
 	wl_signal_init(&manager->events.destroy);
 
 	manager->global = wl_global_create(display,
-		&zwp_text_input_manager_v3_interface, 1, manager,
-		text_input_manager_bind);
+		&zwp_text_input_manager_v3_interface, TEXT_INPUT_MANAGER_V3_VERSION,
+		manager, text_input_manager_bind);
 	if (!manager->global) {
 		free(manager);
 		return NULL;

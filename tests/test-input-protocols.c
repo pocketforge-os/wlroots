@@ -51,7 +51,10 @@ struct server {
 	size_t text_inputs_created;
 	size_t enable_events;
 	size_t commit_events;
+	size_t show_panel_events;
+	size_t hide_panel_events;
 	uint32_t last_content_hint;
+	uint32_t last_available_actions;
 
 	size_t set_shape_events;
 	uint32_t shapes_seen[8];
@@ -61,11 +64,37 @@ static struct server server;
 
 static struct wl_listener text_input_listener, set_shape_listener;
 #define MAX_TEXT_INPUTS 4
-static struct {
+struct ti_slot {
 	struct wl_listener enable;
 	struct wl_listener commit;
-} ti_listeners[MAX_TEXT_INPUTS];
+	struct wl_listener show_panel;
+	struct wl_listener hide_panel;
+	struct wl_listener destroy;
+};
+static struct ti_slot ti_listeners[MAX_TEXT_INPUTS];
 static size_t ti_listener_slots;
+
+static void remove_slot_listeners(struct ti_slot *slot) {
+	struct wl_listener *listeners[] = {
+		&slot->enable, &slot->commit, &slot->show_panel,
+		&slot->hide_panel, &slot->destroy,
+	};
+	for (size_t i = 0; i < sizeof(listeners) / sizeof(listeners[0]); i++) {
+		if (!wl_list_empty(&listeners[i]->link)) {
+			wl_list_remove(&listeners[i]->link);
+			wl_list_init(&listeners[i]->link);
+		}
+	}
+}
+
+// The text input can be destroyed while the client is still connected
+// (or on disconnect, racing with waitpid); wlroots asserts that no
+// listeners remain, so detach ours from the destroy signal.
+static void handle_text_input_destroy(struct wl_listener *listener, void *data) {
+	(void)data;
+	struct ti_slot *slot = wl_container_of(listener, slot, destroy);
+	remove_slot_listeners(slot);
+}
 
 static void handle_text_input_enable(struct wl_listener *listener, void *data) {
 	struct wlr_text_input_v3 *text_input = data;
@@ -77,6 +106,26 @@ static void handle_text_input_commit(struct wl_listener *listener, void *data) {
 	struct wlr_text_input_v3 *text_input = data;
 	server.commit_events++;
 	server.last_content_hint = text_input->current.content_type.hint;
+	server.last_available_actions = text_input->current.available_actions;
+	// Exercise the version 2 server->client events on the committing
+	// (v2-bound) text input.
+	wlr_text_input_v3_send_action(text_input,
+		WLR_TEXT_INPUT_V3_ACTION_SUBMIT, text_input->current_serial);
+	wlr_text_input_v3_send_language(text_input, "en-US");
+	wlr_text_input_v3_send_preedit_hint(text_input, 0, 5,
+		WLR_TEXT_INPUT_V3_PREEDIT_HINT_WHOLE);
+}
+
+static void handle_request_show_panel(struct wl_listener *listener, void *data) {
+	(void)listener;
+	(void)data;
+	server.show_panel_events++;
+}
+
+static void handle_request_hide_panel(struct wl_listener *listener, void *data) {
+	(void)listener;
+	(void)data;
+	server.hide_panel_events++;
 }
 
 static void handle_manager_text_input(struct wl_listener *listener, void *data) {
@@ -89,15 +138,22 @@ static void handle_manager_text_input(struct wl_listener *listener, void *data) 
 	}
 	ti_listeners[slot].enable.notify = handle_text_input_enable;
 	ti_listeners[slot].commit.notify = handle_text_input_commit;
+	ti_listeners[slot].show_panel.notify = handle_request_show_panel;
+	ti_listeners[slot].hide_panel.notify = handle_request_hide_panel;
+	ti_listeners[slot].destroy.notify = handle_text_input_destroy;
+	wl_signal_add(&text_input->events.destroy, &ti_listeners[slot].destroy);
 	wl_signal_add(&text_input->events.enable, &ti_listeners[slot].enable);
 	wl_signal_add(&text_input->events.commit, &ti_listeners[slot].commit);
+	wl_signal_add(&text_input->events.request_show_panel,
+		&ti_listeners[slot].show_panel);
+	wl_signal_add(&text_input->events.request_hide_panel,
+		&ti_listeners[slot].hide_panel);
 	ti_listener_slots = slot + 1;
 }
 
 static void server_remove_listeners(void) {
 	for (size_t i = 0; i < ti_listener_slots; i++) {
-		wl_list_remove(&ti_listeners[i].enable.link);
-		wl_list_remove(&ti_listeners[i].commit.link);
+		remove_slot_listeners(&ti_listeners[i]);
 	}
 	if (server.text_input_manager != NULL) {
 		wl_list_remove(&text_input_listener.link);
@@ -182,6 +238,88 @@ static const struct wl_seat_listener seat_listener = {
 	.name = seat_name,
 };
 
+struct ti_events {
+	size_t actions;
+	size_t languages;
+	size_t preedit_hints;
+	uint32_t action;
+	uint32_t action_serial;
+	char language[32];
+	uint32_t ph_start;
+	uint32_t ph_end;
+	uint32_t ph_hint;
+};
+
+static struct ti_events ti_events;
+
+static void ti_enter(void *data, struct zwp_text_input_v3 *ti,
+		struct wl_surface *surface) {
+	(void)data; (void)ti; (void)surface;
+}
+
+static void ti_leave(void *data, struct zwp_text_input_v3 *ti,
+		struct wl_surface *surface) {
+	(void)data; (void)ti; (void)surface;
+}
+
+static void ti_preedit_string(void *data, struct zwp_text_input_v3 *ti,
+		const char *text, int32_t cursor_begin, int32_t cursor_end) {
+	(void)data; (void)ti; (void)text; (void)cursor_begin; (void)cursor_end;
+}
+
+static void ti_commit_string(void *data, struct zwp_text_input_v3 *ti,
+		const char *text) {
+	(void)data; (void)ti; (void)text;
+}
+
+static void ti_delete_surrounding_text(void *data, struct zwp_text_input_v3 *ti,
+		uint32_t before_length, uint32_t after_length) {
+	(void)data; (void)ti; (void)before_length; (void)after_length;
+}
+
+static void ti_done(void *data, struct zwp_text_input_v3 *ti, uint32_t serial) {
+	(void)data; (void)ti; (void)serial;
+}
+
+static void ti_action(void *data, struct zwp_text_input_v3 *ti,
+		uint32_t action, uint32_t serial) {
+	(void)ti;
+	struct ti_events *events = data;
+	events->actions++;
+	events->action = action;
+	events->action_serial = serial;
+}
+
+static void ti_language(void *data, struct zwp_text_input_v3 *ti,
+		const char *language) {
+	(void)ti;
+	struct ti_events *events = data;
+	events->languages++;
+	snprintf(events->language, sizeof(events->language), "%s", language);
+}
+
+static void ti_preedit_hint(void *data, struct zwp_text_input_v3 *ti,
+		uint32_t start, uint32_t end, uint32_t hint) {
+	(void)ti;
+	struct ti_events *events = data;
+	events->preedit_hints++;
+	events->ph_start = start;
+	events->ph_end = end;
+	events->ph_hint = hint;
+}
+
+static const struct zwp_text_input_v3_listener ti_listener = {
+	.enter = ti_enter,
+	.leave = ti_leave,
+	.preedit_string = ti_preedit_string,
+	.commit_string = ti_commit_string,
+	.delete_surrounding_text = ti_delete_surrounding_text,
+	.done = ti_done,
+	.action = ti_action,
+	.language = ti_language,
+	.preedit_hint = ti_preedit_hint,
+};
+
 static void client_connect(struct client *client, const char *socket) {
 	memset(client, 0, sizeof(*client));
 	client->display = wl_display_connect(socket);
@@ -219,16 +357,19 @@ static int client_text_input(const char *socket) {
 		client.text_input_manager_name, &zwp_text_input_manager_v3_interface, 2);
 	client.text_input = zwp_text_input_manager_v3_get_text_input(
 		client.text_input_manager, client.seat);
+	zwp_text_input_v3_add_listener(client.text_input, &ti_listener, &ti_events);
 
 	// Existing v1 flow still works: content hints (including the version 2
 	// hint flags, which pass through the unvalidated hint bitmask) plus
-	// enable and commit round-trips without a protocol error.
+	// enable and commit round-trips without a protocol error. The protocol
+	// requires set_content_type to follow enable, since enable resets the
+	// pending state.
+	zwp_text_input_v3_enable(client.text_input);
 	zwp_text_input_v3_set_content_type(client.text_input,
 		ZWP_TEXT_INPUT_V3_CONTENT_HINT_ON_SCREEN_INPUT_PROVIDED |
 		ZWP_TEXT_INPUT_V3_CONTENT_HINT_NO_EMOJI |
 		ZWP_TEXT_INPUT_V3_CONTENT_HINT_PREEDIT_SHOWN,
 		ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
-	zwp_text_input_v3_enable(client.text_input);
 	zwp_text_input_v3_commit(client.text_input);
 	wl_display_roundtrip(client.display);
 	CHECK(wl_display_get_error(client.display) == 0,
@@ -251,6 +392,21 @@ static int client_text_input(const char *socket) {
 	CHECK(wl_display_get_error(client.display) == 0,
 		"v2 request round-trip failed: %s",
 		strerror(wl_display_get_error(client.display)));
+
+	// Version 2 events sent by the server on commit must reach the client.
+	CHECK(ti_events.actions == 1 &&
+			ti_events.action == ZWP_TEXT_INPUT_V3_ACTION_SUBMIT,
+		"expected 1 action event with SUBMIT, got %zu (action %"PRIu32")",
+		ti_events.actions, ti_events.action);
+	CHECK(ti_events.languages == 1 && strcmp(ti_events.language, "en-US") == 0,
+		"expected 1 language event en-US, got %zu (%s)",
+		ti_events.languages, ti_events.language);
+	CHECK(ti_events.preedit_hints == 1 && ti_events.ph_start == 0 &&
+			ti_events.ph_end == 5 &&
+			ti_events.ph_hint == ZWP_TEXT_INPUT_V3_PREEDIT_HINT_WHOLE,
+		"unexpected preedit_hint events (%zu, %"PRIu32", %"PRIu32", %"PRIu32")",
+		ti_events.preedit_hints, ti_events.ph_start, ti_events.ph_end,
+		ti_events.ph_hint);
 
 	// Negative control: the same v2 request on a v1-bound text input must
 	// be rejected with a protocol error.
@@ -417,6 +573,16 @@ int main(int argc, char *argv[]) {
 				 ZWP_TEXT_INPUT_V3_CONTENT_HINT_PREEDIT_SHOWN),
 			"version 2 content hints did not pass through (0x%x)",
 			server.last_content_hint);
+		CHECK(server.show_panel_events == 1,
+			"expected 1 request_show_panel signal, got %zu",
+			server.show_panel_events);
+		CHECK(server.hide_panel_events == 1,
+			"expected 1 request_hide_panel signal, got %zu",
+			server.hide_panel_events);
+		CHECK(server.last_available_actions ==
+				WLR_TEXT_INPUT_V3_AVAILABLE_ACTION_SUBMIT,
+			"available_actions not applied on commit (0x%x)",
+			server.last_available_actions);
 	} else {
 		// The client's final negative control kills the connection with
 		// an expected protocol error; the client still exits cleanly.
