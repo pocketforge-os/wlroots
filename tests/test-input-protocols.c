@@ -14,7 +14,6 @@
 #include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
-#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -618,13 +617,11 @@ int main(int argc, char *argv[]) {
 	}
 
 	server_remove_listeners();
+	// wl_display_destroy() unlinks the socket and lock files and frees the
+	// socket name, so only the (empty) private directory remains afterwards.
 	wl_display_destroy(server.display);
 
 	if (owned_runtime_dir != NULL) {
-		char socket_path[PATH_MAX];
-		snprintf(socket_path, sizeof(socket_path), "%s/%s",
-			owned_runtime_dir, socket);
-		unlink(socket_path);
 		rmdir(owned_runtime_dir);
 	}
 	return failures != 0;
