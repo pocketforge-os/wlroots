@@ -1,0 +1,93 @@
+name: build
+
+on:
+  pull_request:
+    branches: [pocketforge]
+  push:
+    branches: [pocketforge]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fail-closed guard: untrusted fork code must not run on self-hosted
+  # runners, but a skipped build must also never read as a passing gate.
+  # Fork PRs therefore get an explicit failing check instead of a skip.
+  external-fork-guard:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: [self-hosted, pf-public-ci]
+    timeout-minutes: 5
+    steps:
+      - name: Refuse fork PR builds on self-hosted runners
+        run: |
+          echo "Pull requests from forked repositories are not built on" \
+            "self-hosted runners. A maintainer must review the diff and" \
+            "run the tests from a same-repository branch."
+          exit 1
+
+  meson-tests:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, pf-public-ci]
+    # archlinux:base-devel as resolved on 2026-10-11; pinned by digest under
+    # the repository name the registry service answers digest pulls for.
+    container: library/archlinux@sha256:996c3a1d6b0d87b01242f6fcd8cfa3ad3eece1a67ab5c8f108e20af1d7b97bdd
+    timeout-minutes: 30
+    steps:
+      - name: Prepare build environment
+        run: |
+          pacman-key --init
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm git meson wayland wayland-protocols \
+            libxkbcommon pixman libdrm
+
+      - name: Check out the tested public revision
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          # Bind the evidence to the exact PR head revision, not the
+          # synthetic refs/pull/<n>/merge commit.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: false
+
+      - name: Configure Git safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Verify checked-out revision
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse HEAD)"
+          EXPECTED="${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"
+          echo "checked out $HEAD_SHA, expected $EXPECTED"
+          test "$HEAD_SHA" = "$EXPECTED"
+
+      - name: Configure (headless profile, pinned wayland-protocols fallback)
+        run: |
+          set -euo pipefail
+          # The 'tests' option and the input-protocol suite land in a
+          # follow-up change; only pass options this head actually defines.
+          TESTS_OPT=()
+          if grep -q "^option('tests'" meson.options; then
+            TESTS_OPT+=(-Dtests=true)
+          fi
+          meson setup build --wrap-mode=default \
+            --force-fallback-for=wayland-protocols \
+            "${TESTS_OPT[@]}" -Dexamples=false \
+            -Dxwayland=disabled -Dsession=disabled \
+            "-Dbackends=[]" "-Drenderers=[]" "-Dallocators=[]" \
+            -Dcolor-management=disabled -Dlibliftoff=disabled \
+            -Dxcb-errors=disabled
+
+      - name: Build
+        run: meson compile -C build
+
+      - name: Test
+        run: meson test -C build --print-errorlogs
