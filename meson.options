@@ -9,3 +9,4 @@ option('allocators', type: 'array', choices: ['auto', 'gbm', 'udmabuf'], value: 
 option('session', type: 'feature', value: 'auto', description: 'Enable session support')
 option('color-management', type: 'feature', value: 'auto', description: 'Enable support for color management')
 option('libliftoff', type: 'feature', value: 'auto', description: 'Enable support for libliftoff')
+option('tests', type: 'boolean', value: false, description: 'Build protocol tests')
