@@ -2,7 +2,20 @@ wayland_protos = dependency('wayland-protocols',
 	version: '>=1.48',
 	fallback: 'wayland-protocols',
 	default_options: ['tests=false'],
+	required: false,
 )
+if not wayland_protos.found()
+	# When a parent project already resolved wayland-protocols (for example
+	# with no version constraint), Meson caches that lookup in the dependency
+	# overrides, whose identifier does not include the version requirement.
+	# This versioned lookup then short-circuits to a "(cached)" miss and the
+	# fallback wrap is never consulted, even when it is present. Resolve the
+	# fallback subproject explicitly so the pinned protocol sources are used
+	# regardless of the host package version.
+	wayland_protos = subproject('wayland-protocols',
+		default_options: ['tests=false'],
+	).get_variable('wayland_protocols')
+endif
 wl_protocol_dir = wayland_protos.get_variable('pkgdatadir')
 
 wayland_scanner_dep = dependency('wayland-scanner',
