@@ -21,6 +21,29 @@ enum wlr_text_input_v3_features {
 	WLR_TEXT_INPUT_V3_FEATURE_CURSOR_RECTANGLE = 1 << 2,
 };
 
+// Mirrors enum zwp_text_input_v3_action (since version 2)
+enum wlr_text_input_v3_action {
+	WLR_TEXT_INPUT_V3_ACTION_NONE = 0,
+	WLR_TEXT_INPUT_V3_ACTION_SUBMIT = 1,
+};
+
+// Bitfield of actions accepted by zwp_text_input_v3.set_available_actions
+// (since version 2); bit N corresponds to action enum value N + 1.
+enum wlr_text_input_v3_available_action {
+	WLR_TEXT_INPUT_V3_AVAILABLE_ACTION_SUBMIT = 1 << 0,
+};
+
+// Mirrors enum zwp_text_input_v3_preedit_hint (since version 2)
+enum wlr_text_input_v3_preedit_hint {
+	WLR_TEXT_INPUT_V3_PREEDIT_HINT_WHOLE = 1,
+	WLR_TEXT_INPUT_V3_PREEDIT_HINT_SELECTION = 2,
+	WLR_TEXT_INPUT_V3_PREEDIT_HINT_PREDICTION = 3,
+	WLR_TEXT_INPUT_V3_PREEDIT_HINT_PREFIX = 4,
+	WLR_TEXT_INPUT_V3_PREEDIT_HINT_SUFFIX = 5,
+	WLR_TEXT_INPUT_V3_PREEDIT_HINT_SPELLING_ERROR = 6,
+	WLR_TEXT_INPUT_V3_PREEDIT_HINT_COMPOSE_ERROR = 7,
+};
+
 struct wlr_text_input_v3_state {
 	struct {
 		char *text; // NULL is allowed and equivalent to empty string
@@ -40,6 +63,10 @@ struct wlr_text_input_v3_state {
 	// Tracks which features were used in the current commit.
 	// Useful in the enabling commit, where usage means support.
 	uint32_t features; // bitfield of enum wlr_text_input_v3_features
+
+	// Set via set_available_actions, applied on commit, and NOT reset by
+	// enable (protocol requirement).
+	uint32_t available_actions; // bitfield of enum wlr_text_input_v3_available_action
 };
 
 struct wlr_text_input_v3 {
@@ -61,6 +88,9 @@ struct wlr_text_input_v3 {
 		struct wl_signal commit; // struct wlr_text_input_v3
 		struct wl_signal disable; // struct wlr_text_input_v3
 		struct wl_signal destroy; // struct wlr_text_input_v3
+		// A version 2 client asked the panel to be shown/hidden.
+		struct wl_signal request_show_panel; // struct wlr_text_input_v3
+		struct wl_signal request_hide_panel; // struct wlr_text_input_v3
 	} events;
 
 	struct {
@@ -99,5 +129,12 @@ void wlr_text_input_v3_send_delete_surrounding_text(
 	struct wlr_text_input_v3 *text_input, uint32_t before_length,
 	uint32_t after_length);
 void wlr_text_input_v3_send_done(struct wlr_text_input_v3 *text_input);
+// Version 2 events; the text_input resource must be version 2 or newer.
+void wlr_text_input_v3_send_action(struct wlr_text_input_v3 *text_input,
+	enum wlr_text_input_v3_action action, uint32_t serial);
+void wlr_text_input_v3_send_language(struct wlr_text_input_v3 *text_input,
+	const char *language);
+void wlr_text_input_v3_send_preedit_hint(struct wlr_text_input_v3 *text_input,
+	uint32_t start, uint32_t end, enum wlr_text_input_v3_preedit_hint hint);
 
 #endif

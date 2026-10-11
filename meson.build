@@ -178,6 +178,10 @@ if get_option('examples')
 	subdir('tinywl')
 endif
 
+if get_option('tests')
+	subdir('tests')
+endif
+
 pkgconfig = import('pkgconfig')
 pkgconfig.generate(
 	lib_wlr,
